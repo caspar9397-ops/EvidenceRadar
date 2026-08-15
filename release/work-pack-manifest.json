@@ -1,7 +1,7 @@
 {
   "format": "evidenceradar-work-pack-manifest",
   "manifest_version": "1",
-  "pack_version": "1.6.1",
+  "pack_version": "1.7.0",
   "schema_version": "1.0",
   "archive_manifest_path": "manifest.json",
   "required": [
@@ -13,6 +13,7 @@
     "config/radar_master.json",
     "docs/WORK_SETUP.md",
     "docs/SEMANTIC_CONTRACT_V3.md",
+    "docs/GLASS_AG_NA_PROFILE.md",
     "docs/research_taxonomy.md",
     "docs/MIGRATION_DUAL_LANE_1.0.md",
     "state/current/EvidenceRadar_State.json",
@@ -41,6 +42,7 @@
     "requirements.lock",
     "docs/WORK_SETUP.md",
     "docs/SEMANTIC_CONTRACT_V3.md",
+    "docs/GLASS_AG_NA_PROFILE.md",
     "docs/research_taxonomy.md",
     "docs/MIGRATION_DUAL_LANE_1.0.md",
     "config/*.yml",

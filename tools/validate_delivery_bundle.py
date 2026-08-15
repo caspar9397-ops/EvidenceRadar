@@ -1371,6 +1371,8 @@ def _state_run_parity_errors(
             parity_fields = (*parity_fields, *STUDY_CLASSIFICATION_PARITY_FIELDS)
         if _chatbot_translation_contract(run):
             parity_fields = (*parity_fields, "title_zh_tw")
+        if candidate.get("category") == "glass_ag_na_ion_exchange":
+            parity_fields = (*parity_fields, "glass_screening")
         for field in parity_fields:
             if field not in candidate:
                 errors.append(f"Run.candidates[{index}] is missing State parity field {field!r}")
@@ -1527,7 +1529,12 @@ def _state_run_parity_errors(
                         f"State.works[{work_id}].document_type_basis must equal "
                         f"Run.candidates[{index}].document_type_basis"
                     )
-            elif field in {"study_designs", "study_design_basis", "title_zh_tw"} and canonical(
+            elif field in {
+                "study_designs",
+                "study_design_basis",
+                "title_zh_tw",
+                "glass_screening",
+            } and canonical(
                 current
             ) != canonical(historical):
                 errors.append(
@@ -2594,6 +2601,25 @@ def _v3_contract_errors(
         if isinstance(item, Mapping) and item.get("work_id")
     }
     for work_id, candidate in candidate_by_work.items():
+        if candidate.get("category") == "glass_ag_na_ion_exchange":
+            try:
+                from tools.run_github_radar import validate_glass_screening
+
+                glass_decision = validate_glass_screening(
+                    candidate.get("glass_screening")
+                )
+            except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+                errors.append(
+                    f"Run candidate {work_id!r} has invalid glass_screening: {exc}"
+                )
+                glass_decision = ""
+            if (
+                glass_decision in {"EXCLUDE", "UNCERTAIN"}
+                and candidate.get("triage_status") != "LOWER_PRIORITY"
+            ):
+                errors.append(
+                    f"Run candidate {work_id!r} excluded/uncertain glass screening must be LOWER_PRIORITY"
+                )
         for field in ("identity_status", "access_depth", "access_outcome", "topic_alignments"):
             if field not in candidate:
                 errors.append(f"Run candidate {work_id!r} is missing V3 field {field!r}")
@@ -2627,6 +2653,12 @@ def _v3_contract_errors(
             for field in ("identity_status", "access_depth", "access_outcome", "topic_alignments"):
                 if evidence_work.get(field) != candidate.get(field):
                     errors.append(f"Evidence.works[{work_id}].{field} must equal Run candidate")
+            if candidate.get("category") == "glass_ag_na_ion_exchange" and evidence_work.get(
+                "glass_screening"
+            ) != candidate.get("glass_screening"):
+                errors.append(
+                    f"Evidence.works[{work_id}].glass_screening must equal Run candidate"
+                )
 
         registry_urls = {
             _v3_canonical_source_url(item.get("canonical_url"))

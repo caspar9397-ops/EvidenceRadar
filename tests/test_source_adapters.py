@@ -23,6 +23,7 @@ from tools.run_github_radar import (
     candidate_oa_status,
     fetch_acl_anthology,
     fetch_arxiv,
+    fetch_crossref,
     fetch_europe_pmc,
     fetch_openreview,
     fetch_pmlr,
@@ -72,6 +73,36 @@ class SourceAdapterEmptyResponseTests(unittest.TestCase):
     def test_europe_pmc_empty_result_is_empty(self) -> None:
         response = _response(payload={"hitCount": 0, "resultList": {"result": []}})
         self.assertEqual([], _call(fetch_europe_pmc, _session(response)))
+
+    def test_crossref_empty_result_is_empty(self) -> None:
+        response = _response(payload={"message": {"items": []}})
+        self.assertEqual([], _call(fetch_crossref, _session(response)))
+
+    def test_crossref_parses_formal_glass_article_metadata(self) -> None:
+        response = _response(
+            payload={
+                "message": {
+                    "items": [
+                        {
+                            "DOI": "10.1000/glass.1",
+                            "title": ["Silver-sodium ion exchange in glass"],
+                            "author": [{"given": "A.", "family": "Researcher"}],
+                            "container-title": ["Journal of Glass Studies"],
+                            "published-online": {"date-parts": [[2026, 8, 8]]},
+                            "URL": "https://doi.org/10.1000/glass.1",
+                            "abstract": "<jats:p>Pure AgNO3 exchange.</jats:p>",
+                            "type": "journal-article",
+                        }
+                    ]
+                }
+            }
+        )
+        candidates = _call(fetch_crossref, _session(response))
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("10.1000/glass.1", candidates[0].doi)
+        self.assertEqual("2026-08-08", candidates[0].publication_date)
+        self.assertEqual("Journal of Glass Studies", candidates[0].venue)
+        self.assertEqual("Pure AgNO3 exchange.", candidates[0].abstract)
 
     def test_arxiv_empty_feed_is_empty(self) -> None:
         response = _response(

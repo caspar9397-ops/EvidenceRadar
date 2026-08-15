@@ -507,6 +507,9 @@ def _merge_work(records: Sequence[Mapping[str, Any]], tokens: Sequence[Mapping[s
     category = _latest_value(records, "category")
     if category is not None:
         merged["category"] = category
+    glass_screening = _latest_value(records, "glass_screening")
+    if glass_screening is not None:
+        merged["glass_screening"] = copy.deepcopy(glass_screening)
     title_zh_tw = _latest_value(records, "title_zh_tw")
     if title_zh_tw is not None:
         merged["title_zh_tw"] = title_zh_tw

@@ -160,6 +160,11 @@ def select_featured_work_ids_v2(
             item for item in items
             if str(item.get("event_status") or "") != "NO_QUALIFYING_EVENT"
             and str(item.get("event_class") or "OTHER") not in excluded
+            and (
+                str(item.get("category") or "") != "glass_ag_na_ion_exchange"
+                or str((item.get("glass_screening") or {}).get("decision") or "")
+                == "INCLUDE"
+            )
             and item.get("work_id")
         ]
         eligible.sort(key=_rank)

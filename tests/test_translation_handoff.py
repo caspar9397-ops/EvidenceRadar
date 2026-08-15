@@ -224,6 +224,7 @@ class TranslationHandoffE2ETests(unittest.TestCase):
                 end_at=end_at,
                 run_id="handoff-e2e",
                 execution_lane="github_actions",
+                profile_id="owner_daily",
                 publisher_target_min=3,
                 publisher_hard_max=5,
                 protocol_commit="d" * 40,

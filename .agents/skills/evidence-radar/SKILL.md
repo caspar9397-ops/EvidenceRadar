@@ -15,7 +15,7 @@ from the operation that actually ran. Never fabricate an executor receipt from
 prose or reuse an example as current evidence.
 
 Create one strict `EvidenceRadar_WorkInput` JSON file outside the verified pack.
-Set `schema_version` to `1.0`; include `end_at`, `profile_id`,
+Set `schema_version` to `1.0`; include `end_at`, optional `start_at`, `mode`, `profile_id`,
 `raw_candidate_count`, the complete `queries` and `source_access` ledgers,
 sorted `checked_sources`, `searched_sources` and `unavailable_sources`, ordered
 `priority_candidate_ids`, bounded `publisher_access`, `publisher_warnings`, and
@@ -24,6 +24,11 @@ the complete candidate array. Each candidate item must contain exactly:
 - `work_id`: the identity derived by the protocol;
 - `candidate`: the complete candidate fields used by the executor;
 - `translation`: `title_zh_tw` plus `summary_zh_tw` from the source actually read.
+
+When the selected profile is `glass_ag_na_ion_exchange`, first read
+`docs/GLASS_AG_NA_PROFILE.md`. Every candidate's complete `candidate` object
+must include `glass_screening`; excluded or uncertain work IDs must not appear
+in `priority_candidate_ids`.
 
 For a candidate with a source excerpt, provide a faithful Traditional Chinese
 summary. When no excerpt exists, keep `summary_zh_tw` empty. Preserve numbers,

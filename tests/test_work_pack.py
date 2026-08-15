@@ -54,6 +54,7 @@ class WorkPackTests(unittest.TestCase):
             "config/radar_master.json",
             "docs/WORK_SETUP.md",
             "docs/SEMANTIC_CONTRACT_V3.md",
+            "docs/GLASS_AG_NA_PROFILE.md",
             "schemas/evidence-radar-state.schema.json",
             "state/current/EvidenceRadar_State.json",
             "templates/gpt-work-instructions.md",
@@ -159,7 +160,7 @@ class WorkPackTests(unittest.TestCase):
                 self.assertEqual("manifest.json", names[-1])
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertEqual("evidenceradar-work-pack", manifest["format"])
-                self.assertEqual("1.6.1", manifest["pack_version"])
+                self.assertEqual("1.7.0", manifest["pack_version"])
                 self.assertEqual("chatgpt_work", manifest["execution_lane"])
                 self.assertEqual("WORK_ENTRY.md", manifest["entrypoint"])
                 self.assertEqual("tools/run_work_radar.py", manifest["executor"])

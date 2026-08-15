@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DefaultProfileTests(unittest.TestCase):
-    def test_unspecified_profile_resolves_to_owner_daily(self) -> None:
+    def test_unspecified_profile_resolves_to_glass_radar(self) -> None:
         master = load_master(ROOT / "config" / "radar_master.json")
         control = master["control_plane"]
-        self.assertEqual(control["default_profile"], "owner_daily")
-        self.assertEqual(control["production_profile"], "owner_daily")
+        self.assertEqual(control["default_profile"], "glass_ag_na_ion_exchange")
+        self.assertEqual(control["production_profile"], "glass_ag_na_ion_exchange")
 
         runtime = compile_runtime(
             master,
@@ -34,32 +34,20 @@ class DefaultProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             runtime.category_order,
-            [
-                "clinical_medicine",
-                "sport_science",
-                "sport_nutrition_fitness",
-                "llm_research",
-                "human_ai",
-            ],
+            ["glass_ag_na_ion_exchange"],
         )
         self.assertEqual(
             runtime.limits["selection"]["final_digest"],
-            {"target": 20, "hard_max": 32},
+            {"target": 15, "hard_max": 30},
         )
-        self.assertIn("oa_jama_network_open", runtime.streams["streams"])
-        self.assertIn("owner_ncomms_llm", runtime.streams["streams"])
-        self.assertIn("owner_lancet_clinical", runtime.streams["streams"])
-        self.assertIn(
-            "owner_lancet_digital_health_llm", runtime.streams["streams"]
+        self.assertEqual(
+            {"crossref", "openalex", "publisher"},
+            set(runtime.streams["streams"]["glass_ag_na_ion_exchange"]["sources"]),
         )
-        for stream_id in (
-            "owner_elsevier_sport",
-            "owner_elsevier_nutrition",
-            "owner_elsevier_llm",
-            "owner_elsevier_human_ai",
-            "owner_elsevier_clinical_ai",
-        ):
-            self.assertIn(stream_id, runtime.streams["streams"])
+        self.assertEqual(
+            "pure AgNO3 only",
+            runtime.profile_policy["screening_policy"]["molten_salt"],
+        )
 
     def test_checked_in_runner_accepts_profile_without_a_patch_step(self) -> None:
         args = parse_args(
@@ -69,10 +57,10 @@ class DefaultProfileTests(unittest.TestCase):
                 "--state",
                 "/tmp/evidenceradar-profile-state.json",
                 "--profile",
-                "owner_daily",
+                "glass_ag_na_ion_exchange",
             ]
         )
-        self.assertEqual("owner_daily", args.profile)
+        self.assertEqual("glass_ag_na_ion_exchange", args.profile)
 
     def test_missing_master_fails_closed_before_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
