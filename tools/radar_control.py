@@ -19,7 +19,7 @@ ALLOWED_STAGES = {"discovery", "bounded_verification"}
 ALLOWED_SOURCE_STATUS = {"active", "planned", "disabled"}
 ALLOWED_DISCOVERY_TIERS = {"primary", "supplemental"}
 IMPLEMENTED_ADAPTERS = {
-    "pubmed", "europe_pmc", "openalex", "arxiv", "openreview",
+    "pubmed", "europe_pmc", "openalex", "crossref", "arxiv", "openreview",
     "acl_anthology", "pmlr", "rss_atom", "bounded_publisher",
 }
 
@@ -35,6 +35,7 @@ class MasterRuntime:
     category_labels_zh_tw: dict[str, str]
     taxonomy: dict[str, Any]
     limits: dict[str, Any]
+    profile_policy: dict[str, Any]
 
 
 def _load_mapping(path: Path, *, json_only: bool = False) -> dict[str, Any]:
@@ -350,6 +351,11 @@ def validate_master(master: dict[str, Any]) -> None:
             if not isinstance(profile["limits"], dict):
                 raise RadarControlError(f"profile {profile_id} limits must be an object")
             _validate_limit_block(profile["limits"], path=f"profile {profile_id}.limits")
+        for policy_name in ("reference_composition", "run_policy", "screening_policy"):
+            if policy_name in profile and not isinstance(profile[policy_name], dict):
+                raise RadarControlError(
+                    f"profile {profile_id} {policy_name} must be an object"
+                )
         resolved_profile_limits = _resolved_limits(master, profile, profile_id)
         unknown_limit_categories = sorted(
             set(map(str, resolved_profile_limits["selection"].get("per_category", {}))) - set(categories)
@@ -474,6 +480,15 @@ def compile_runtime(
             "master_schema_version": master["schema_version"],
             "profile_id": profile_id,
             "limits_authoritative": True,
+            "profile_policy": {
+                key: copy.deepcopy(profile[key])
+                for key in (
+                    "reference_composition",
+                    "run_policy",
+                    "screening_policy",
+                )
+                if key in profile
+            },
         },
     }
 
@@ -500,6 +515,15 @@ def compile_runtime(
         category_labels_zh_tw=labels,
         taxonomy=copy.deepcopy(master["taxonomy"]),
         limits=copy.deepcopy(limits),
+        profile_policy={
+            key: copy.deepcopy(profile[key])
+            for key in (
+                "reference_composition",
+                "run_policy",
+                "screening_policy",
+            )
+            if key in profile
+        },
     )
 
 

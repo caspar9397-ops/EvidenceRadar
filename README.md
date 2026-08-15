@@ -4,6 +4,16 @@
 >
 > EvidenceRadar 是一套可公開自行部署、可稽核、也可以依個人需求改造的近期研究雷達。它把「發現新文獻」與「證據已核實」分開，使用事件窗、publication identity、來源覆蓋、claim ledger、可攜 State、executor receipts 與 fail-closed validation，減少重複通知、來源誤判與過度宣稱。
 
+## 此 fork 的用途
+
+預設與 production profile 已改為 `glass_ag_na_ion_exchange`，專門搜尋玻璃
+Ag⁺/Na⁺ 離子交換研究。只把「無外加電場、純 AgNO₃ 熔鹽、原文明列玻璃
+氧化物組成」的研究列為納入；混鹽與不符合項目保留在完整候選池並標示
+排除原因。學長基準為 **75 mol% SiO₂–25 mol% Na₂O 二元玻璃**。
+
+完整篩選、成分比較、歷史回溯與逐篇欄位契約見
+[`docs/GLASS_AG_NA_PROFILE.md`](docs/GLASS_AG_NA_PROFILE.md)。
+
 ## 建議使用方式：長期使用請先複製到自己的 GitHub
 
 如果只是想試用 EvidenceRadar，可以直接使用這個 repository 的 latest verified Work Pack。
@@ -22,7 +32,8 @@
 - profiles
 - discovery／selection／verification limits
 
-`owner_daily` 是目前預設與 production profile，但不是所有用家都應照抄的唯一設定。
+`glass_ag_na_ion_exchange` 是此 fork 目前的預設與 production profile；原本的
+`owner_daily` 仍保留，可在需要時明確選用。
 
 輸出、語言、翻譯與 rendering 行為則同時檢查：
 
@@ -86,7 +97,7 @@ Modify this repository source and rebuild a new Work Pack from the fork.
 
 **不要直接修改已下載並驗證的 Work Pack。** Work Pack 是 read-only 的 portable policy／artifact contract；需要改來源、需求或翻譯功能時，應修改自己的 repository source，再重新 build／release。
 
-## 最快的試用方式
+## 唯一用家執行路徑
 
 如果不需要個人化，向 ChatGPT Work 說：
 
@@ -109,6 +120,8 @@ EvidenceRadar_Run.json
 ChatGPT Work 會下載一次正式 Work Pack、checksum 與簽署 provenance；驗證後在同一輪完成搜尋、來源讀取、核實、繁中翻譯、去重、State 處理、canonical HTML render 與四件套 validation。
 
 GitHub 在這條一般用家路徑主要負責原始碼、版本化設定與 immutable Work Pack 儲存。下載完成後不需要啟動 Actions、不需要建立 issue／PR，也不需要等待 Stage A／Stage B。
+
+執行 Radar 不需要 GitHub workflow、issue、PR 或 Stage B。
 
 Repository 亦提供 [`.agents/skills/evidence-radar/SKILL.md`](.agents/skills/evidence-radar/SKILL.md)，供支援 agent skills 的環境理解 EvidenceRadar 的 end-to-end 執行契約。
 
@@ -188,13 +201,12 @@ python3 tools/render_report_from_artifacts.py --bundle "$WORK_RUN_DIR"
 
 目前的 authoritative source/profile selection 位於 [`config/radar_master.json`](config/radar_master.json)。現行配置包含多種可組合來源與 profile；例如 biomedical、LLM／AI、Nature／OA、Lancet 與 curated Elsevier families，並可將不同來源組合到不同 reader profile。
 
-目前預設 `owner_daily` 聚焦：
+目前預設 `glass_ag_na_ion_exchange` 聚焦：
 
-- Clinical Medicine
-- Sport Science
-- Sport Nutrition & Fitness
-- LLM Research
-- Human–AI Research
+- 玻璃 Ag⁺/Na⁺ 離子交換
+- 純 AgNO₃ 熔鹽、無外加電場
+- 75 mol% SiO₂–25 mol% Na₂O 與其他比例／多成分玻璃的逐項比較
+- 濃度—深度、D、D(C)、mode 數與 effective depth
 
 其他 profile 可只追單一領域，或加入 general research categories。個人 fork 最好建立自己的 profile，而不是把個人偏好硬塞進 upstream 的 `owner_daily`。
 

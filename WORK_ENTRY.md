@@ -63,6 +63,7 @@ Read, in order:
 4. `EVIDENCE_RADAR_PROTOCOL.md`
 5. `config/radar_master.json`
 6. `docs/SEMANTIC_CONTRACT_V3.md`
+7. `docs/GLASS_AG_NA_PROFILE.md`
 
 Resolve every active `rss_atom` target directly from the verified
 `config/radar_master.json` source entry. Use the URLs in `feeds` exactly as
@@ -80,7 +81,14 @@ missing, cannot be fetched or fully paginated, or lacks its required telemetry,
 fail closed with incomplete retrieval and a visible source gap. Never silently
 degrade a configured hybrid source to feed-only or Crossref-only retrieval.
 
-Use profile `owner_daily` unless the user explicitly selects another profile.
+Use `control_plane.default_profile` unless the user explicitly selects another
+profile. In this fork the default and production profile are both
+`glass_ag_na_ion_exchange`. Its first historical run uses `mode=focused` with
+`start_at=1900-01-01T00:00:00+08:00`; later monitoring uses the configured
+Asia/Taipei 168-hour window. Every glass candidate in WorkInput must carry the
+strict `glass_screening` record described in `docs/GLASS_AG_NA_PROFILE.md`.
+Excluded and uncertain studies stay in the complete pool but must not appear in
+`priority_candidate_ids`.
 Keep the extracted package read-only and create a new external run directory.
 Copy the selected base State into that directory before merging any current-run
 observations.

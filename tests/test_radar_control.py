@@ -55,7 +55,8 @@ class RadarControlTests(unittest.TestCase):
             <= authority
         )
         self.assertEqual(
-            self.master["control_plane"]["production_profile"], "owner_daily"
+            self.master["control_plane"]["production_profile"],
+            "glass_ag_na_ion_exchange",
         )
         self.assertEqual(self.master["limits"]["discovery"]["max_per_query"], 40)
         self.assertIsNone(self.master["limits"]["discovery"]["max_per_category"])

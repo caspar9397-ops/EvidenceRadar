@@ -141,6 +141,7 @@ def create_bundle(
         end_at=end_at,
         run_id=run_id,
         execution_lane=execution_lane,
+        profile_id="owner_daily",
         protocol_commit=protocol_commit,
         discoverer=discoverer,
         publisher_probe=publisher_probe,

@@ -704,6 +704,86 @@
         "confidence": { "type": "string", "minLength": 1 }
       }
     },
+    "glass_screening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision", "decision_reason", "exclusion_reasons",
+        "external_electric_field", "molten_salt", "oxide_composition_explicit",
+        "reference_comparison", "comparison_note", "glass_compositions",
+        "exchange_conditions", "reported_outputs", "main_values"
+      ],
+      "properties": {
+        "decision": { "type": "string", "enum": ["INCLUDE", "EXCLUDE", "UNCERTAIN"] },
+        "decision_reason": { "type": "string", "minLength": 1 },
+        "exclusion_reasons": {
+          "type": "array", "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "external_electric_field": { "type": "string", "enum": ["ABSENT", "PRESENT", "NOT_REPORTED"] },
+        "molten_salt": { "type": "string", "enum": ["PURE_AGNO3", "MIXED_SALT", "OTHER", "NOT_REPORTED"] },
+        "oxide_composition_explicit": { "type": "string", "enum": ["YES", "NO", "NOT_REPORTED"] },
+        "reference_comparison": {
+          "type": "string",
+          "enum": ["EXACT_75_25_BINARY", "BINARY_DIFFERENT_RATIO", "MULTICOMPONENT_COMPARABLE", "NOT_COMPARABLE", "UNCERTAIN"]
+        },
+        "comparison_note": { "type": "string", "minLength": 1 },
+        "glass_compositions": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["basis", "components", "source_locator"],
+            "properties": {
+              "basis": { "type": "string", "enum": ["mol%", "wt%", "atomic%", "other", "unknown"] },
+              "components": {
+                "type": "array",
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["oxide", "value"],
+                  "properties": {
+                    "oxide": { "type": "string", "minLength": 1 },
+                    "value": { "type": "number" }
+                  }
+                }
+              },
+              "source_locator": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "exchange_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["temperature_c", "duration", "salt_condition", "source_locator"],
+            "properties": {
+              "temperature_c": { "type": ["number", "null"] },
+              "duration": { "type": "string" },
+              "salt_condition": { "type": "string" },
+              "source_locator": { "type": "string" }
+            }
+          }
+        },
+        "reported_outputs": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["MULTIPLE_EXCHANGE_TIMES", "MULTIPLE_TEMPERATURES", "CONCENTRATION_DEPTH_PROFILE", "DIFFUSION_COEFFICIENT", "CONCENTRATION_DEPENDENT_DIFFUSION", "MODE_COUNT", "EFFECTIVE_DEPTH", "OTHER"]
+          }
+        },
+        "main_values": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["metric", "value_text", "source_locator"],
+            "properties": {
+              "metric": { "type": "string", "minLength": 1 },
+              "value_text": { "type": "string", "minLength": 1 },
+              "source_locator": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
     "candidate": {
       "type": "object",
       "additionalProperties": false,
@@ -735,6 +815,7 @@
         "title": { "type": "string", "minLength": 1 },
         "title_zh_tw": { "type": "string", "minLength": 1 },
         "category": { "type": "string", "minLength": 1 },
+        "glass_screening": { "$ref": "#/$defs/glass_screening" },
         "streams": {
           "type": "array",
           "minItems": 1,

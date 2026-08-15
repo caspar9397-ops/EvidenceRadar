@@ -107,12 +107,15 @@ Before searching, read the following files from the extracted pack:
 - `config/deployment.yml`
 - `docs/research_taxonomy.md`
 - `docs/SEMANTIC_CONTRACT_V3.md`
+- `docs/GLASS_AG_NA_PROFILE.md`
 - `docs/MIGRATION_DUAL_LANE_1.0.md` when moving an existing project
 - `state/current/EvidenceRadar_State.json`
 
 `config/radar_master.json` is authoritative for source routing, profiles and
 limits. Resolve one profile in memory and keep the extracted files unchanged;
-`owner_daily` is the routine owner-delivery profile. A missing master file,
+`glass_ag_na_ion_exchange` is this fork's routine delivery profile. It screens
+against the 75 mol% SiO2 / 25 mol% Na2O binary reference and requires the
+`glass_screening` full-text record for every candidate. A missing master file,
 unknown profile or unavailable configured source is a hard error, never
 permission to fall back to the legacy source catalog. `streams.yml`,
 `output.yml` and `deployment.yml` remain compatibility inputs, not mutable

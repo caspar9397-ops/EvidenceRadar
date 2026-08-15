@@ -75,7 +75,8 @@ searching. Do not activate every catalogued source merely because it exists:
 profiles select streams, and streams select source groups/sources. Planned or
 disabled catalog entries are never searched. When a profile is not explicitly
 supplied, use `control_plane.default_profile`. Scheduled owner delivery uses
-`control_plane.production_profile` (`owner_daily`); `current_plus_general` is a
+`control_plane.production_profile` (`glass_ag_na_ion_exchange` in this fork);
+`current_plus_general` is a
 broad integration/stress profile and must not be substituted for routine daily
 delivery unless broad coverage is explicitly requested.
 
@@ -118,10 +119,19 @@ Use live web search and open the actual authoritative pages. Memory, old reports
 and search snippets are navigation aids only. Never present them as proof of the
 current window.
 
-For `daily`, use an exact rolling 72-hour window in Asia/Tokyo and search every
+For `daily`, use the selected profile's exact rolling window (168 hours in
+Asia/Taipei for `glass_ag_na_ion_exchange`) and search every
 category/stream selected by the resolved profile independently. Record every
 planned query, source target, URL, access result and execution time. Build
 candidates first; write conclusions only after event and evidence verification.
+
+For `glass_ag_na_ion_exchange`, read `docs/GLASS_AG_NA_PROFILE.md` before
+searching. The first historical pass uses `mode=focused` and
+`start_at=1900-01-01T00:00:00+08:00`; later passes use `mode=daily`. Open the
+primary full text and populate `glass_screening` for every candidate. Only
+`INCLUDE` candidates may enter `priority_candidate_ids`. Preserve `EXCLUDE`
+and `UNCERTAIN` records in the complete pool with their reasons and original
+page locators.
 
 Every real search, content fetch, claim verification and gap follow-up must
 produce one `retrieval_attempts` receipt from the executed operation. Reconcile

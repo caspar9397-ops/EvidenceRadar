@@ -32,7 +32,9 @@ from tools.package_work_delivery import (
     WorkDeliveryError,
     package_work_delivery,
 )
+from tools.radar_control import RadarControlError, load_master_runtime
 from tools.run_github_radar import (
+    GLASS_CATEGORY,
     Candidate,
     DiscoveryResult,
     RadarRuntimeError,
@@ -53,6 +55,8 @@ INPUT_FIELDS = {
     "schema_version",
     "run_id",
     "end_at",
+    "start_at",
+    "mode",
     "profile_id",
     "raw_candidate_count",
     "queries",
@@ -108,7 +112,9 @@ def _load_work_input(path: Path) -> dict[str, Any]:
             f"Work input must declare {INPUT_TYPE} schema_version {INPUT_VERSION}"
         )
     unknown = sorted(set(value) - INPUT_FIELDS)
-    missing = sorted(INPUT_FIELDS - {"run_id", "profile_id"} - set(value))
+    missing = sorted(
+        INPUT_FIELDS - {"run_id", "profile_id", "start_at", "mode"} - set(value)
+    )
     if unknown or missing:
         raise WorkExecutorError(
             f"Work input fields are invalid; missing={missing!r} unknown={unknown!r}"
@@ -134,6 +140,10 @@ def _candidate_inputs(
             candidate = _candidate_from_payload(record.get("candidate"))
         except RadarRuntimeError as exc:
             raise WorkExecutorError(f"candidates[{index}]: {exc}") from exc
+        if candidate.category == GLASS_CATEGORY and candidate.glass_screening is None:
+            raise WorkExecutorError(
+                f"candidates[{index}] requires glass_screening for the glass profile"
+            )
         if candidate.work_id != work_id:
             raise WorkExecutorError(
                 f"candidates[{index}] work_id does not match its candidate identity"
@@ -165,6 +175,17 @@ def _discovery_from_input(
         raise WorkExecutorError(
             "priority_candidate_ids contains unknown work IDs: "
             + ", ".join(missing_priority[:5])
+        )
+    invalid_priority = sorted(
+        work_id
+        for work_id in priority_ids
+        if str((by_id[work_id].glass_screening or {}).get("decision") or "")
+        in {"EXCLUDE", "UNCERTAIN"}
+    )
+    if invalid_priority:
+        raise WorkExecutorError(
+            "priority_candidate_ids cannot contain excluded or uncertain glass studies: "
+            + ", ".join(invalid_priority[:5])
         )
     raw_count = value.get("raw_candidate_count")
     if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < len(candidates):
@@ -219,17 +240,67 @@ def execute_work_input(
         raise WorkExecutorError("end_at must be an ISO 8601 date-time") from exc
     if end_at.tzinfo is None or end_at.utcoffset() is None:
         raise WorkExecutorError("end_at must include a timezone offset")
+    raw_start_at = value.get("start_at")
+    start_at: datetime | None = None
+    if raw_start_at is not None:
+        try:
+            start_at = datetime.fromisoformat(str(raw_start_at))
+        except (TypeError, ValueError) as exc:
+            raise WorkExecutorError("start_at must be an ISO 8601 date-time") from exc
+        if start_at.tzinfo is None or start_at.utcoffset() is None:
+            raise WorkExecutorError("start_at must include a timezone offset")
+        if start_at >= end_at:
+            raise WorkExecutorError("start_at must be earlier than end_at")
+    selected_mode = str(value.get("mode") or "daily")
+    if selected_mode not in {"daily", "focused", "deep_verify"}:
+        raise WorkExecutorError("mode must be daily, focused or deep_verify")
     selected_run_id = run_id or str(value.get("run_id") or "").strip() or None
-    selected_profile = (
-        profile_id or str(value.get("profile_id") or "").strip() or "owner_daily"
-    )
+    selected_profile = profile_id or str(value.get("profile_id") or "").strip() or None
+    try:
+        profile_runtime = load_master_runtime(
+            root / "config" / "radar_master.json", profile_id=selected_profile
+        )
+    except (OSError, RadarControlError) as exc:
+        raise WorkExecutorError(f"cannot resolve selected profile: {exc}") from exc
+    selected_profile = profile_runtime.profile_id
+    seed_state = root / "state/current/EvidenceRadar_State.json"
+    try:
+        seed_value = strict_json_load_path(seed_state)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkExecutorError(f"cannot read seed State: {exc}") from exc
+    if (
+        start_at is None
+        and "mode" not in value
+        and isinstance(seed_value, dict)
+        and seed_value.get("profile_id") == selected_profile
+        and seed_value.get("works") == []
+    ):
+        run_policy = profile_runtime.profile_policy.get("run_policy", {})
+        raw_initial_start = (
+            run_policy.get("initial_start") if isinstance(run_policy, dict) else None
+        )
+        raw_initial_mode = (
+            run_policy.get("initial_mode") if isinstance(run_policy, dict) else None
+        )
+        if raw_initial_start:
+            try:
+                start_at = datetime.fromisoformat(str(raw_initial_start))
+            except ValueError as exc:
+                raise WorkExecutorError(
+                    "selected profile has an invalid run_policy.initial_start"
+                ) from exc
+        if raw_initial_mode:
+            selected_mode = str(raw_initial_mode)
+        if selected_mode not in {"daily", "focused", "deep_verify"}:
+            raise WorkExecutorError(
+                "selected profile has an invalid run_policy.initial_mode"
+            )
     protocol_commit = str(verified.get("source_commit") or "")
     if not protocol_commit:
         raise WorkExecutorError("verified Work Pack is missing source_commit")
 
     run_dir.mkdir(parents=True)
     state_path = run_dir / "EvidenceRadar_State.json"
-    seed_state = root / "state/current/EvidenceRadar_State.json"
     shutil.copyfile(seed_state, state_path)
 
     def discoverer(*_args: Any, **_kwargs: Any) -> DiscoveryResult:
@@ -266,6 +337,8 @@ def execute_work_input(
         output_dir=run_dir,
         state_path=state_path,
         end_at=end_at,
+        start_at=start_at,
+        mode=selected_mode,
         run_id=selected_run_id,
         execution_lane="chatgpt_work",
         protocol_commit=protocol_commit,

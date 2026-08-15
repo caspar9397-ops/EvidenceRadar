@@ -74,6 +74,7 @@ from tools.strict_json import loads as strict_json_loads
 PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 OPENALEX_WORKS = "https://api.openalex.org/works"
+CROSSREF_WORKS = "https://api.crossref.org/works"
 ARXIV_QUERY = "https://export.arxiv.org/api/query"
 OPENREVIEW_SEARCH = "https://api2.openreview.net/notes/search"
 ACL_ANTHOLOGY_FEED = "https://aclanthology.org/papers/index.xml"
@@ -112,6 +113,7 @@ DISCOVERY_ADAPTER_KEYS = {
     "pubmed",
     "europe_pmc",
     "openalex",
+    "crossref",
     "arxiv",
     "openreview",
     "acl_anthology",
@@ -131,6 +133,18 @@ EVENT_CLASSES = {
     "NEW_PUBLICATION",
     "BACKFILL_INDEXING",
     "CORRECTION_NOTICE",
+    "OTHER",
+}
+GLASS_CATEGORY = "glass_ag_na_ion_exchange"
+GLASS_DECISIONS = {"INCLUDE", "EXCLUDE", "UNCERTAIN"}
+GLASS_OUTPUTS = {
+    "MULTIPLE_EXCHANGE_TIMES",
+    "MULTIPLE_TEMPERATURES",
+    "CONCENTRATION_DEPTH_PROFILE",
+    "DIFFUSION_COEFFICIENT",
+    "CONCENTRATION_DEPENDENT_DIFFUSION",
+    "MODE_COUNT",
+    "EFFECTIVE_DEPTH",
     "OTHER",
 }
 CORRECTION_TITLE_PATTERN = re.compile(
@@ -424,6 +438,7 @@ class Candidate:
     query_ids: list[str] = field(default_factory=list)
     observed_streams: list[str] = field(default_factory=list)
     observed_sources: list[str] = field(default_factory=list)
+    glass_screening: dict[str, Any] | None = None
     triage_status: str = "UNASSESSED"
     triage_reasons: list[str] = field(default_factory=list)
 
@@ -442,6 +457,8 @@ class Candidate:
             [*(self.oa_evidence or []), *_provider_oa_evidence(self)]
         )
         _apply_candidate_classification(self)
+        if self.glass_screening is not None:
+            validate_glass_screening(self.glass_screening)
 
     @property
     def normalized_title(self) -> str:
@@ -550,6 +567,217 @@ class Candidate:
         if self.openalex_id.startswith(("http://", "https://")):
             urls.append(self.openalex_id)
         return _ordered_unique_urls(urls)
+
+
+def _locator_has_page(value: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\bpp?\.?\s*\d+|\bpages?\s+\d+|\bpdf\s+page\s+\d+|\u7b2c?\s*\d+\s*\u9801)",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
+def validate_glass_screening(value: Any) -> str:
+    """Validate the strict full-text screening record for the glass profile."""
+
+    if not isinstance(value, dict):
+        raise RadarRuntimeError("glass_screening must be an object")
+    required = {
+        "decision",
+        "decision_reason",
+        "exclusion_reasons",
+        "external_electric_field",
+        "molten_salt",
+        "oxide_composition_explicit",
+        "reference_comparison",
+        "comparison_note",
+        "glass_compositions",
+        "exchange_conditions",
+        "reported_outputs",
+        "main_values",
+    }
+    unknown = sorted(set(value) - required)
+    missing = sorted(required - set(value))
+    if unknown or missing:
+        raise RadarRuntimeError(
+            f"glass_screening fields are invalid; missing={missing!r} unknown={unknown!r}"
+        )
+    decision = str(value.get("decision") or "")
+    if decision not in GLASS_DECISIONS:
+        raise RadarRuntimeError("glass_screening.decision is invalid")
+    if not str(value.get("decision_reason") or "").strip():
+        raise RadarRuntimeError("glass_screening.decision_reason must be non-empty")
+    if not str(value.get("comparison_note") or "").strip():
+        raise RadarRuntimeError("glass_screening.comparison_note must be non-empty")
+
+    external_field = str(value.get("external_electric_field") or "")
+    molten_salt = str(value.get("molten_salt") or "")
+    composition_explicit = str(value.get("oxide_composition_explicit") or "")
+    comparison = str(value.get("reference_comparison") or "")
+    if external_field not in {"ABSENT", "PRESENT", "NOT_REPORTED"}:
+        raise RadarRuntimeError("glass_screening.external_electric_field is invalid")
+    if molten_salt not in {"PURE_AGNO3", "MIXED_SALT", "OTHER", "NOT_REPORTED"}:
+        raise RadarRuntimeError("glass_screening.molten_salt is invalid")
+    if composition_explicit not in {"YES", "NO", "NOT_REPORTED"}:
+        raise RadarRuntimeError("glass_screening.oxide_composition_explicit is invalid")
+    if comparison not in {
+        "EXACT_75_25_BINARY",
+        "BINARY_DIFFERENT_RATIO",
+        "MULTICOMPONENT_COMPARABLE",
+        "NOT_COMPARABLE",
+        "UNCERTAIN",
+    }:
+        raise RadarRuntimeError("glass_screening.reference_comparison is invalid")
+
+    exclusion_reasons = value.get("exclusion_reasons")
+    if (
+        not isinstance(exclusion_reasons, list)
+        or any(not isinstance(item, str) or not item for item in exclusion_reasons)
+        or exclusion_reasons != sorted(set(exclusion_reasons))
+    ):
+        raise RadarRuntimeError(
+            "glass_screening.exclusion_reasons must be a sorted unique string array"
+        )
+    outputs = value.get("reported_outputs")
+    if (
+        not isinstance(outputs, list)
+        or any(item not in GLASS_OUTPUTS for item in outputs)
+        or outputs != sorted(set(outputs))
+    ):
+        raise RadarRuntimeError(
+            "glass_screening.reported_outputs must be a sorted unique allowed array"
+        )
+
+    compositions = value.get("glass_compositions")
+    conditions = value.get("exchange_conditions")
+    main_values = value.get("main_values")
+    for field_name, records, fields_required in (
+        (
+            "glass_compositions",
+            compositions,
+            {"basis", "components", "source_locator"},
+        ),
+        (
+            "exchange_conditions",
+            conditions,
+            {"temperature_c", "duration", "salt_condition", "source_locator"},
+        ),
+        (
+            "main_values",
+            main_values,
+            {"metric", "value_text", "source_locator"},
+        ),
+    ):
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise RadarRuntimeError(f"glass_screening.{field_name} must be an array of objects")
+        for index, item in enumerate(records):
+            if set(item) != fields_required:
+                raise RadarRuntimeError(
+                    f"glass_screening.{field_name}[{index}] has invalid fields"
+                )
+
+    for index, composition in enumerate(compositions):
+        if composition["basis"] not in {"mol%", "wt%", "atomic%", "other", "unknown"}:
+            raise RadarRuntimeError(
+                f"glass_screening.glass_compositions[{index}].basis is invalid"
+            )
+        components = composition["components"]
+        if not isinstance(components, list) or any(
+            not isinstance(component, dict)
+            or set(component) != {"oxide", "value"}
+            or not isinstance(component.get("oxide"), str)
+            or not component.get("oxide")
+            or isinstance(component.get("value"), bool)
+            or not isinstance(component.get("value"), (int, float))
+            for component in components
+        ):
+            raise RadarRuntimeError(
+                f"glass_screening.glass_compositions[{index}].components is invalid"
+            )
+    for index, condition in enumerate(conditions):
+        temperature = condition["temperature_c"]
+        if temperature is not None and (
+            isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+        ):
+            raise RadarRuntimeError(
+                f"glass_screening.exchange_conditions[{index}].temperature_c is invalid"
+            )
+        for field_name in ("duration", "salt_condition", "source_locator"):
+            if not isinstance(condition[field_name], str):
+                raise RadarRuntimeError(
+                    f"glass_screening.exchange_conditions[{index}].{field_name} is invalid"
+                )
+    for index, main_value in enumerate(main_values):
+        if any(
+            not isinstance(main_value[field_name], str) or not main_value[field_name].strip()
+            for field_name in ("metric", "value_text", "source_locator")
+        ):
+            raise RadarRuntimeError(
+                f"glass_screening.main_values[{index}] must contain non-empty strings"
+            )
+
+    fatal_mismatch = (
+        external_field == "PRESENT"
+        or molten_salt in {"MIXED_SALT", "OTHER"}
+        or composition_explicit == "NO"
+    )
+    unknown_required_fact = (
+        external_field == "NOT_REPORTED"
+        or molten_salt == "NOT_REPORTED"
+        or composition_explicit == "NOT_REPORTED"
+    )
+    if decision == "INCLUDE":
+        if fatal_mismatch or unknown_required_fact:
+            raise RadarRuntimeError(
+                "glass_screening INCLUDE conflicts with a required condition"
+            )
+        if not compositions or not conditions or not main_values:
+            raise RadarRuntimeError(
+                "glass_screening INCLUDE requires composition, condition and main-value records"
+            )
+        if any(
+            condition["temperature_c"] is None
+            or not condition["duration"].strip()
+            or "agno3" not in condition["salt_condition"].casefold()
+            for condition in conditions
+        ):
+            raise RadarRuntimeError(
+                "glass_screening INCLUDE requires explicit temperature, duration and pure AgNO3 conditions"
+            )
+        locator_records = [*compositions, *conditions, *main_values]
+        if any(not _locator_has_page(str(item["source_locator"])) for item in locator_records):
+            raise RadarRuntimeError(
+                "glass_screening INCLUDE requires original page numbers for composition, conditions and main values"
+            )
+        if exclusion_reasons:
+            raise RadarRuntimeError("glass_screening INCLUDE cannot have exclusion reasons")
+        if comparison == "EXACT_75_25_BINARY":
+            exact = any(
+                composition["basis"] == "mol%"
+                and len(composition["components"]) == 2
+                and {
+                    component["oxide"].casefold(): float(component["value"])
+                    for component in composition["components"]
+                }
+                == {"sio2": 75.0, "na2o": 25.0}
+                for composition in compositions
+            )
+            if not exact:
+                raise RadarRuntimeError(
+                    "EXACT_75_25_BINARY requires a 75 mol% SiO2 / 25 mol% Na2O binary composition"
+                )
+    elif decision == "EXCLUDE":
+        if not fatal_mismatch or not exclusion_reasons:
+            raise RadarRuntimeError(
+                "glass_screening EXCLUDE requires a failed necessary condition and exclusion reason"
+            )
+    elif not unknown_required_fact:
+        raise RadarRuntimeError(
+            "glass_screening UNCERTAIN requires at least one unreported necessary condition"
+        )
+    return decision
 
 
 @dataclass
@@ -1261,6 +1489,125 @@ def fetch_openalex(
                     if _terminal_id(ids.get("pmcid"))
                     else (item.get("open_access") or {}).get("is_oa")
                 ),
+                is_preprint=is_preprint,
+                provider_publication_types=[work_type] if work_type else [],
+                events=events,
+            )
+        )
+    return candidates
+
+
+def _crossref_date(item: Mapping[str, Any]) -> str:
+    """Return the most publication-specific valid Crossref date."""
+
+    for field_name in ("published-online", "published-print", "published", "issued"):
+        date_parts = (item.get(field_name) or {}).get("date-parts", [])
+        if not isinstance(date_parts, list) or not date_parts or not isinstance(date_parts[0], list):
+            continue
+        parts = date_parts[0]
+        try:
+            year = int(parts[0])
+            month = int(parts[1]) if len(parts) > 1 else 1
+            day = int(parts[2]) if len(parts) > 2 else 1
+            return date(year, month, day).isoformat()
+        except (IndexError, TypeError, ValueError):
+            continue
+    return ""
+
+
+def fetch_crossref(
+    session: requests.Session,
+    query: str,
+    stream: str,
+    category: str,
+    start_date: date,
+    end_date: date,
+    max_results: int,
+) -> list[Candidate]:
+    """Discover formal literature metadata through Crossref's public API."""
+
+    params: dict[str, Any] = {
+        "query.bibliographic": query,
+        "filter": (
+            f"from-pub-date:{start_date.isoformat()},"
+            f"until-pub-date:{end_date.isoformat()}"
+        ),
+        "sort": "published",
+        "order": "desc",
+        "rows": min(max_results, 100),
+        "select": (
+            "DOI,title,author,container-title,published-online,published-print,"
+            "published,issued,URL,abstract,type,subtype"
+        ),
+    }
+    payload = _request(session, CROSSREF_WORKS, params=params).json()
+    message = payload.get("message") if isinstance(payload, dict) else None
+    items = message.get("items") if isinstance(message, dict) else None
+    if not isinstance(items, list):
+        raise RadarRuntimeError("Crossref returned an invalid works payload")
+
+    candidates: list[Candidate] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_title = item.get("title") or []
+        title = raw_title[0] if isinstance(raw_title, list) and raw_title else raw_title
+        title = re.sub(r"\s+", " ", html.unescape(str(title or ""))).strip()
+        if not title:
+            continue
+        publication_date = _crossref_date(item)
+        work_type = str(item.get("type") or item.get("subtype") or "")
+        is_preprint = work_type.casefold() in {"posted-content", "preprint"}
+        doi = normalize_doi(str(item.get("DOI") or ""))
+        landing_url = str(item.get("URL") or "")
+        if doi:
+            landing_url = f"https://doi.org/{quote(doi, safe='/')}"
+        events = []
+        if publication_date and not is_preprint:
+            events.append(
+                event_record(
+                    "formal_version_verified",
+                    publication_date,
+                    "Crossref",
+                    "published-online/published-print/issued",
+                    landing_url,
+                    "date",
+                    "provider_metadata",
+                )
+            )
+        authors = []
+        for author in item.get("author", []):
+            if not isinstance(author, dict):
+                continue
+            name = " ".join(
+                value
+                for value in (
+                    str(author.get("given") or "").strip(),
+                    str(author.get("family") or "").strip(),
+                )
+                if value
+            )
+            if name:
+                authors.append(name)
+        raw_venue = item.get("container-title") or []
+        venue = raw_venue[0] if isinstance(raw_venue, list) and raw_venue else raw_venue
+        abstract = re.sub(
+            r"\s+",
+            " ",
+            re.sub(r"<[^>]+>", " ", html.unescape(str(item.get("abstract") or ""))),
+        ).strip()
+        candidates.append(
+            Candidate(
+                title=title,
+                stream=stream,
+                category=category,
+                source="Crossref",
+                publication_date=publication_date,
+                authors=authors,
+                venue=str(venue or work_type),
+                abstract=abstract,
+                doi=doi,
+                landing_url=landing_url,
                 is_preprint=is_preprint,
                 provider_publication_types=[work_type] if work_type else [],
                 events=events,
@@ -2229,10 +2576,52 @@ def score_candidate(candidate: Candidate, relevance_terms: Iterable[str]) -> int
     )
     identity_bonus = 8 if candidate.doi or candidate.pmid else 0
     oa_bonus = 4 if candidate.open_access else 0
-    return min(100, 40 + matches * 6 + title_matches * 3 + identity_bonus + oa_bonus)
+    glass_bonus = 0
+    if candidate.category == GLASS_CATEGORY and candidate.glass_screening:
+        decision = validate_glass_screening(candidate.glass_screening)
+        if decision == "INCLUDE":
+            glass_bonus += {
+                "EXACT_75_25_BINARY": 18,
+                "BINARY_DIFFERENT_RATIO": 12,
+                "MULTICOMPONENT_COMPARABLE": 6,
+                "NOT_COMPARABLE": 0,
+                "UNCERTAIN": 0,
+            }[str(candidate.glass_screening["reference_comparison"])]
+            priority_outputs = {
+                "MULTIPLE_EXCHANGE_TIMES",
+                "MULTIPLE_TEMPERATURES",
+                "CONCENTRATION_DEPTH_PROFILE",
+                "DIFFUSION_COEFFICIENT",
+                "CONCENTRATION_DEPENDENT_DIFFUSION",
+                "MODE_COUNT",
+                "EFFECTIVE_DEPTH",
+            }
+            glass_bonus += min(
+                28,
+                4
+                * len(
+                    priority_outputs
+                    & set(candidate.glass_screening.get("reported_outputs", []))
+                ),
+            )
+    return min(
+        100,
+        40 + matches * 6 + title_matches * 3 + identity_bonus + oa_bonus + glass_bonus,
+    )
 
 
 def assess_candidate(candidate: Candidate, scoring: dict[str, Any]) -> tuple[str, list[str]]:
+    if candidate.category == GLASS_CATEGORY:
+        if candidate.glass_screening is None:
+            return "REVIEW_REQUIRED", ["GLASS_FULLTEXT_SCREENING_REQUIRED"]
+        decision = validate_glass_screening(candidate.glass_screening)
+        if decision != "INCLUDE":
+            return "LOWER_PRIORITY", sorted(
+                {
+                    f"GLASS_SCREENING_{decision}",
+                    *candidate.glass_screening.get("exclusion_reasons", []),
+                }
+            )
     title = candidate.title.casefold()
     review_signals = {
         "retracted": "RETRACTION_SIGNAL_REQUIRES_REVIEW",
@@ -2655,6 +3044,7 @@ def discover_candidates(
         "pubmed": fetch_pubmed,
         "europe_pmc": fetch_europe_pmc,
         "openalex": fetch_openalex,
+        "crossref": fetch_crossref,
         "arxiv": fetch_arxiv,
         "openreview": fetch_openreview,
         "acl_anthology": fetch_acl_anthology,
@@ -3299,6 +3689,7 @@ def _zh_tw_metadata_summary(candidate: Candidate, *, max_chars: int) -> str:
         "sport_nutrition_fitness": "運動營養與體適能",
         "llm_research": "大型語言模型",
         "human_ai": "人類與 AI 互動",
+        "glass_ag_na_ion_exchange": "玻璃 Ag⁺/Na⁺ 離子交換",
     }
     design_rules = (
         (r"systematic review.{0,30}meta-analysis|meta-analysis.{0,30}systematic review", "系統性回顧與統合分析"),
@@ -4236,6 +4627,20 @@ def build_candidate_ledger(
             "PARTIAL": "Matched the configured query but was routed below the priority threshold.",
             "UNCERTAIN": "Matched the configured query but requires review before topical fit is asserted.",
         }[alignment_status]
+        if candidate.category == GLASS_CATEGORY and candidate.glass_screening:
+            glass_decision = str(candidate.glass_screening["decision"])
+            if glass_decision == "INCLUDE":
+                alignment_status = "DIRECT"
+            elif glass_decision == "UNCERTAIN":
+                alignment_status = "UNCERTAIN"
+            elif (
+                candidate.glass_screening["external_electric_field"] == "PRESENT"
+                or candidate.glass_screening["molten_salt"] in {"MIXED_SALT", "OTHER"}
+            ):
+                alignment_status = "MECHANISM_CONFLICT"
+            else:
+                alignment_status = "OUT_OF_SCOPE"
+            alignment_reason = str(candidate.glass_screening["decision_reason"])
         topic_alignments = [
             {
                 "criterion_id": f"stream:{stream_id}",
@@ -4285,6 +4690,11 @@ def build_candidate_ledger(
             "document_type_basis": candidate.document_type_basis,
             "study_designs": list(candidate.study_designs),
             "study_design_basis": candidate.study_design_basis,
+            **(
+                {"glass_screening": copy.deepcopy(candidate.glass_screening)}
+                if candidate.glass_screening is not None
+                else {}
+            ),
         }
         if candidate.venue:
             record["venue"] = candidate.venue
@@ -4343,6 +4753,20 @@ def build_state(
             "PARTIAL": "Matched the configured query but was routed below the priority threshold.",
             "UNCERTAIN": "Matched the configured query but requires review before topical fit is asserted.",
         }[alignment_status]
+        if candidate.category == GLASS_CATEGORY and candidate.glass_screening:
+            glass_decision = str(candidate.glass_screening["decision"])
+            if glass_decision == "INCLUDE":
+                alignment_status = "DIRECT"
+            elif glass_decision == "UNCERTAIN":
+                alignment_status = "UNCERTAIN"
+            elif (
+                candidate.glass_screening["external_electric_field"] == "PRESENT"
+                or candidate.glass_screening["molten_salt"] in {"MIXED_SALT", "OTHER"}
+            ):
+                alignment_status = "MECHANISM_CONFLICT"
+            else:
+                alignment_status = "OUT_OF_SCOPE"
+            alignment_reason = str(candidate.glass_screening["decision_reason"])
         current_alignments = [
             {
                 "criterion_id": f"stream:{stream_id}",
@@ -4379,6 +4803,11 @@ def build_state(
                 "document_type_basis": candidate.document_type_basis,
                 "study_designs": list(candidate.study_designs),
                 "study_design_basis": candidate.study_design_basis,
+                **(
+                    {"glass_screening": copy.deepcopy(candidate.glass_screening)}
+                    if candidate.glass_screening is not None
+                    else {}
+                ),
             }
             if candidate.open_access is not None:
                 work["open_access"] = candidate.open_access
@@ -4468,6 +4897,8 @@ def build_state(
             )
             work["study_designs"] = list(candidate.study_designs)
             work["study_design_basis"] = candidate.study_design_basis
+            if candidate.glass_screening is not None:
+                work["glass_screening"] = copy.deepcopy(candidate.glass_screening)
         prior_works[candidate.work_id] = work
 
     for candidate, event, access in selected:
@@ -5551,6 +5982,11 @@ def build_evidence(
             "download_urls": copy.deepcopy(item.get("download_urls") or []),
             "fulltext_locations": copy.deepcopy(item.get("fulltext_locations") or []),
             "topic_alignments": copy.deepcopy(item.get("topic_alignments") or []),
+            **(
+                {"glass_screening": copy.deepcopy(item["glass_screening"])}
+                if item.get("glass_screening") is not None
+                else {}
+            ),
             "limitations": [
                 "Automated lane records retrieval and access observations, not substantive scientific support."
             ],
@@ -5608,6 +6044,91 @@ def select_featured_work_ids(
     )
 
 
+def _glass_screening_projection(value: Any) -> tuple[str, str, str, str]:
+    """Return report panel, badge, searchable text and decision."""
+
+    if not isinstance(value, dict):
+        return "", "", "", ""
+    decision = str(value.get("decision") or "UNCERTAIN")
+    decision_label = {
+        "INCLUDE": "納入",
+        "EXCLUDE": "排除",
+        "UNCERTAIN": "必要條件待確認",
+    }.get(decision, decision)
+    badge = (
+        f'<span class="glass-decision glass-{html.escape(decision.casefold(), quote=True)}">'
+        f'{html.escape(decision_label)}</span>'
+    )
+    composition_lines = []
+    for composition in value.get("glass_compositions", []):
+        components = " + ".join(
+            f'{component.get("value")} {composition.get("basis")} {component.get("oxide")}'
+            for component in composition.get("components", [])
+        )
+        composition_lines.append(
+            f'{components or "未列"} — {composition.get("source_locator") or "無頁碼"}'
+        )
+    condition_lines = [
+        (
+            f'{condition.get("temperature_c")} °C · '
+            f'{condition.get("duration") or "時間未列"} · '
+            f'{condition.get("salt_condition") or "熔鹽未列"} — '
+            f'{condition.get("source_locator") or "無頁碼"}'
+        )
+        for condition in value.get("exchange_conditions", [])
+    ]
+    main_value_lines = [
+        (
+            f'{item.get("metric")}: {item.get("value_text")} — '
+            f'{item.get("source_locator") or "無頁碼"}'
+        )
+        for item in value.get("main_values", [])
+    ]
+    output_labels = {
+        "MULTIPLE_EXCHANGE_TIMES": "不同交換時間",
+        "MULTIPLE_TEMPERATURES": "不同溫度",
+        "CONCENTRATION_DEPTH_PROFILE": "濃度—深度曲線",
+        "DIFFUSION_COEFFICIENT": "擴散係數 D",
+        "CONCENTRATION_DEPENDENT_DIFFUSION": "D(C)",
+        "MODE_COUNT": "mode 數",
+        "EFFECTIVE_DEPTH": "effective depth",
+        "OTHER": "其他量測",
+    }
+    outputs = "、".join(
+        output_labels.get(str(item), str(item))
+        for item in value.get("reported_outputs", [])
+    ) or "未報告優先量測"
+    exclusions = "、".join(str(item) for item in value.get("exclusion_reasons", [])) or "無"
+    rows = (
+        ("篩選判定", f'{decision_label}：{value.get("decision_reason") or ""}'),
+        (
+            "必要條件",
+            f'電場 {value.get("external_electric_field")}；熔鹽 {value.get("molten_salt")}；'
+            f'氧化物組成 {value.get("oxide_composition_explicit")}',
+        ),
+        (
+            "與 75 mol% SiO₂–25 mol% Na₂O 比較",
+            f'{value.get("reference_comparison")}：{value.get("comparison_note") or ""}',
+        ),
+        ("玻璃組成與原文頁碼", "；".join(composition_lines) or "未列"),
+        ("溫度／時間／熔鹽與原文頁碼", "；".join(condition_lines) or "未列"),
+        ("優先量測", outputs),
+        ("主要數值與原文頁碼", "；".join(main_value_lines) or "未列"),
+        ("排除原因", exclusions),
+    )
+    panel = (
+        '<section class="glass-screening" aria-label="玻璃離子交換全文篩選">'
+        '<h4>Ag⁺/Na⁺ 離子交換全文篩選</h4><dl>'
+        + "".join(
+            f'<dt>{html.escape(label)}</dt><dd>{html.escape(text)}</dd>'
+            for label, text in rows
+        )
+        + "</dl></section>"
+    )
+    searchable = " ".join(text for _label, text in rows)
+    return panel, badge, searchable, decision
+
+
 def render_report(
     candidate_records: list[dict[str, Any]],
     *,
@@ -5632,6 +6153,19 @@ def render_report(
     featured_policy: dict[str, Any] | None = None,
 ) -> str:
     displayed = [item for item in candidate_records if item["displayed_in_report"]]
+    glass_report = any(item.get("category") == GLASS_CATEGORY for item in displayed)
+    report_title = (
+        "玻璃 Ag⁺/Na⁺ 離子交換文獻雷達"
+        if glass_report
+        else "近期研究候選報告"
+    )
+    report_lede = (
+        "只把原文明確證實無外加電場、純 AgNO₃ 熔鹽且列出玻璃氧化物組成的研究列為納入；"
+        "排除與必要條件待確認的文獻仍保留並標示原因。基準成分為 75 mol% SiO₂–25 mol% Na₂O 二元玻璃，"
+        "各篇均顯示溫度、時間、熔鹽、主要數值及原文頁碼。"
+        if glass_report
+        else "先讀每類今日精選，再按需展開完整候選池。文獻／研究類型採來源 metadata 與題名明示的保守分類；不確定就留白。OA 狀態與本輪全文存取分開顯示；被擋的 OA 來源仍保留為 OA，且 DOI／摘要頁不會被算成全文成功。"
+    )
     window_hours = max(1, round((end - start).total_seconds() / 3600))
     featured_work_ids = select_featured_work_ids(
         displayed,
@@ -5650,6 +6184,7 @@ def render_report(
         "sport_nutrition_fitness": "運動營養與體適能",
         "llm_research": "大型語言模型研究",
         "human_ai": "人類與 AI 互動",
+        "glass_ag_na_ion_exchange": "玻璃 Ag⁺/Na⁺ 離子交換",
     }
     triage_labels = {
         "PRIORITY": "優先閱讀",
@@ -5833,6 +6368,9 @@ def render_report(
             study_type_values = [document_type, *study_designs]
             triage_status = str(item["triage_status"])
             triage_class = triage_status.casefold().replace("_", "-")
+            glass_panel, glass_badge, glass_search, glass_decision = (
+                _glass_screening_projection(item.get("glass_screening"))
+            )
             search_value = " ".join(
                 [
                     original_title,
@@ -5845,6 +6383,7 @@ def render_report(
                     " ".join(discovery_sources),
                     " ".join(study_design_labels.get(value, value) for value in study_designs),
                     document_type_labels.get(document_type, document_type),
+                    glass_search,
                 ]
             )
             detail_id = f"candidate-{rank:04d}"
@@ -5855,6 +6394,7 @@ def render_report(
                 f'data-featured="{"true" if featured_marker else "false"}" '
                 f'data-category="{html.escape(category, quote=True)}" '
                 f'data-triage="{html.escape(triage_status, quote=True)}" '
+                f'data-glass-decision="{html.escape(glass_decision, quote=True)}" '
                 f'data-event-class="{html.escape(str(item.get("event_class") or "OTHER"), quote=True)}" '
                 f'data-oa-status="{html.escape(str(item.get("oa_status") or "UNKNOWN"), quote=True)}" '
                 f'data-access-status="{html.escape(str(item.get("access_status") or "NOT_CHECKED"), quote=True)}" '
@@ -5867,6 +6407,7 @@ def render_report(
                 f'<span class="rank">#{rank:03d}</span>'
                 f'<span class="badge {triage_class}">'
                 f'{html.escape(triage_labels.get(triage_status, triage_status))}</span>'
+                f'{glass_badge}'
                 f'<span class="access-chip oa-{html.escape(oa_status.casefold())}">{html.escape(oa_label)}</span>'
                 f'<span class="access-chip access-{html.escape(access_status.casefold())}">{html.escape(access_label)}</span>'
                 f'<span class="access-chip event-{html.escape(classification.casefold())}">{html.escape(event_class_label)}</span>'
@@ -5887,6 +6428,7 @@ def render_report(
                 f'<span>{html.escape(summary_labels.get(summary_basis, summary_basis))}</span></div>'
                 f'<p data-content-role="navigation_summary">{html.escape(summary_text)}</p>'
                 '</section>'
+                f'{glass_panel}'
                 '<div class="paper-meta">'
                 f'<span><b>日期</b>{html.escape(publication_date)}</span>'
                 f'<span class="window-reason"><b>{window_hours} 小時納入理由</b>{html.escape(window_reason)}</span>'
@@ -6074,7 +6616,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 .metric{padding:14px 16px;border:1px solid rgba(255,255,255,.18);border-radius:14px;background:rgba(255,255,255,.1);backdrop-filter:blur(6px)}
 .metric strong{display:block;font-size:1.75rem;line-height:1.15}.metric span{font-size:.82rem;color:#dbeafe}
 .jump-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.jump-links a{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:6px 11px;font-size:.86rem}.jump-links a:hover{background:rgba(255,255,255,.12)}
-.controls{position:sticky;top:0;z-index:20;display:grid;grid-template-columns:minmax(220px,2fr) repeat(6,minmax(130px,1fr)) auto;gap:10px;align-items:end;margin:0 0 18px;padding:14px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(15,23,42,.09);backdrop-filter:blur(10px)}
+.controls{position:sticky;top:0;z-index:20;display:grid;grid-template-columns:minmax(220px,2fr) repeat(7,minmax(130px,1fr)) auto;gap:10px;align-items:end;margin:0 0 18px;padding:14px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(15,23,42,.09);backdrop-filter:blur(10px)}
 .control label{display:block;margin:0 0 4px;font-size:.74rem;font-weight:800;color:var(--muted);letter-spacing:.04em}.control input,.control select{width:100%;min-height:42px;border:1px solid #b9c5d3;border-radius:9px;padding:8px 10px;color:var(--ink);background:#fff;font:inherit}.control input:focus,.control select:focus{outline:3px solid #bae6fd;border-color:#0284c7}
 .control-actions{display:flex;gap:6px;flex-wrap:wrap}.button{min-height:42px;border:1px solid #b9c5d3;border-radius:9px;padding:7px 11px;background:#fff;color:var(--ink);font-weight:700;cursor:pointer}.button:hover{background:#f1f5f9}.button.primary{border-color:#0369a1;background:#0369a1;color:#fff}.result-count{grid-column:1/-1;margin:0;color:var(--muted);font-size:.88rem}
 .panel,.category{margin:14px 0;border:1px solid var(--line);border-radius:16px;background:var(--paper);box-shadow:0 4px 16px rgba(15,23,42,.04);overflow:hidden}
@@ -6089,11 +6631,12 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 .paper-card h3{margin:0 0 9px;font-size:1.12rem;line-height:1.38;letter-spacing:-.012em}.paper-card h3 a{color:#0f2942}
 .source-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}.source-chip{padding:2px 7px;border-radius:999px;background:var(--brand-soft);color:var(--brand);font-size:.7rem;font-weight:800}.study-chip{display:inline-flex;align-items:center;width:max-content;border-radius:999px;padding:3px 8px;font-size:.72rem;font-weight:850;letter-spacing:.025em;color:var(--violet);background:var(--violet-soft)}
 .content-preview{margin:0 0 13px;padding:13px 14px;border-left:4px solid #0ea5e9;border-radius:0 10px 10px 0;background:#f0f9ff}.preview-heading{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px;font-size:.77rem;font-weight:850;color:#075985}.preview-heading span{font-weight:600;color:#64748b}.content-preview p{margin:0;color:#1e3a4f;line-height:1.65}
+.glass-decision{display:inline-flex;align-items:center;width:max-content;border-radius:999px;padding:3px 8px;font-size:.72rem;font-weight:850}.glass-include{color:var(--good);background:var(--good-soft)}.glass-exclude{color:var(--bad);background:var(--bad-soft)}.glass-uncertain{color:var(--warn);background:var(--warn-soft)}.glass-screening{margin:0 0 13px;padding:13px 14px;border:1px solid #c4b5fd;border-radius:10px;background:#faf5ff}.glass-screening h4{margin:0 0 8px;color:#5b21b6}.glass-screening dl{display:grid;grid-template-columns:minmax(150px,.8fr) minmax(0,2.2fr);gap:7px 12px;margin:0;font-size:.82rem}.glass-screening dt{font-weight:800;color:#6b21a8}.glass-screening dd{margin:0;overflow-wrap:anywhere}
 .paper-meta{display:grid;grid-template-columns:minmax(110px,.65fr) minmax(0,2.35fr);gap:8px;margin-top:auto}.paper-meta span{min-width:0;color:#475569;font-size:.82rem}.paper-meta b{display:block;color:#64748b;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em}.window-reason{padding:7px 9px;border-radius:8px;background:#f8fafc}.authors{margin:10px 0 0;color:#52606d;font-size:.82rem}
 .audit-details{margin-top:13px;padding-top:11px;border-top:1px solid #e7edf3}.audit-details>summary{cursor:pointer;color:var(--brand);font-weight:750;font-size:.84rem}.audit-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:8px 12px;margin:13px 0 0;padding:12px;border-radius:10px;background:#f8fafc;font-size:.82rem}.audit-grid dt{color:#64748b;font-weight:750}.audit-grid dd{min-width:0;margin:0;overflow-wrap:anywhere}.source-links{display:flex;gap:6px;flex-wrap:wrap}.source-button{display:inline-flex;padding:3px 8px;border:1px solid #bfdbfe;border-radius:7px;text-decoration:none}.audit-note{margin:10px 0 0;color:#7c2d12;font-size:.76rem}.inline-alert{margin:9px 0 0;padding:8px;border-radius:8px;color:var(--bad);background:var(--bad-soft);font-size:.78rem}.muted{color:var(--muted)}
 .empty-state{margin:18px 0;padding:28px;border:1px dashed #94a3b8;border-radius:14px;text-align:center;color:var(--muted);background:#fff}.warning-list{margin:0;padding-left:1.25rem}.warning-list li+li{margin-top:8px}.footer-note{margin:30px 0;color:#64748b;font-size:.84rem}
 @media(max-width:980px){.metrics{grid-template-columns:repeat(2,1fr)}.controls{grid-template-columns:1fr 1fr}.control-actions{grid-column:1/-1}.paper-grid{grid-template-columns:1fr}}
-@media(max-width:620px){.page-shell{width:min(100% - 18px,1280px)}.hero{margin-top:9px;border-radius:16px}.metrics{grid-template-columns:1fr 1fr}.controls{position:static;grid-template-columns:1fr}.control-actions{grid-column:auto}.paper-grid{padding:0 9px 11px}.paper-card{padding:14px}.paper-meta{grid-template-columns:1fr}.audit-grid{grid-template-columns:1fr}.category-count{white-space:normal}.panel>summary,.category>summary{padding:14px}.preview-heading{display:block}.preview-heading span{display:block;margin-top:2px}.featured-heading{display:block;padding:0 9px 8px}.featured-heading span{display:block;margin-top:2px}.full-pool{margin-left:9px;margin-right:9px}.run-line{gap:6px 10px}.run-line span{width:100%}}
+@media(max-width:620px){.page-shell{width:min(100% - 18px,1280px)}.hero{margin-top:9px;border-radius:16px}.metrics{grid-template-columns:1fr 1fr}.controls{position:static;grid-template-columns:1fr}.control-actions{grid-column:auto}.paper-grid{padding:0 9px 11px}.paper-card{padding:14px}.paper-meta,.glass-screening dl{grid-template-columns:1fr}.audit-grid{grid-template-columns:1fr}.category-count{white-space:normal}.panel>summary,.category>summary{padding:14px}.preview-heading{display:block}.preview-heading span{display:block;margin-top:2px}.featured-heading{display:block;padding:0 9px 8px}.featured-heading span{display:block;margin-top:2px}.full-pool{margin-left:9px;margin-right:9px}.run-line{gap:6px 10px}.run-line span{width:100%}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 @media print{body{background:#fff}.page-shell{width:100%}.controls,.jump-links{display:none}.hero{color:#111;background:#fff;border:1px solid #bbb;box-shadow:none}.lede,.run-line,.metric span{color:#333}.metrics{grid-template-columns:repeat(4,1fr)}.metric{border-color:#bbb}.paper-grid{grid-template-columns:1fr}.paper-card{break-inside:avoid;box-shadow:none}}
 """
@@ -6110,6 +6653,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
   const oaStatus = document.getElementById('oa-filter');
   const accessStatus = document.getElementById('access-filter');
   const studyType = document.getElementById('study-type-filter');
+  const glassDecision = document.getElementById('glass-decision-filter');
   const resultCount = document.getElementById('result-count');
   const emptyState = document.getElementById('empty-state');
   const normalize = value => (value || '').toLocaleLowerCase();
@@ -6123,7 +6667,8 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
     const oaValue = oaStatus.value;
     const accessValue = accessStatus.value;
     const studyValue = studyType.value;
-    const filtering = Boolean(query || categoryValue || triageValue || sourceValue || eventValue || oaValue || accessValue || studyValue);
+    const glassValue = glassDecision.value;
+    const filtering = Boolean(query || categoryValue || triageValue || sourceValue || eventValue || oaValue || accessValue || studyValue || glassValue);
     let visible = 0;
     cards.forEach(card => {
       const sourceValues = (card.dataset.source || '').split('|');
@@ -6134,7 +6679,8 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
         (!eventValue || card.dataset.eventClass === eventValue) &&
         (!oaValue || card.dataset.oaStatus === oaValue) &&
         (!accessValue || card.dataset.accessStatus === accessValue) &&
-        (!studyValue || (card.dataset.studyTypes || "").split("|").includes(studyValue));
+        (!studyValue || (card.dataset.studyTypes || "").split("|").includes(studyValue)) &&
+        (!glassValue || card.dataset.glassDecision === glassValue);
       card.hidden = !match;
       if (match) visible += 1;
     });
@@ -6154,7 +6700,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
     emptyState.hidden = visible !== 0;
   }
 
-  [search, category, triage, source, eventClass, oaStatus, accessStatus, studyType].forEach(control => {
+  [search, category, triage, source, eventClass, oaStatus, accessStatus, studyType, glassDecision].forEach(control => {
     control.addEventListener(control === search ? 'input' : 'change', applyFilters);
   });
   document.getElementById('reset-filters').addEventListener('click', () => {
@@ -6166,6 +6712,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
     oaStatus.value = '';
     accessStatus.value = '';
     studyType.value = '';
+    glassDecision.value = '';
     applyFilters();
     search.focus();
   });
@@ -6190,7 +6737,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 <meta name="evidenceradar-featured-candidates" content="{len(featured_work_ids)}">
 <meta name="evidenceradar-claim-count" content="{len(claims)}">
 <meta name="evidenceradar-study-classification" content="v1">
-<title>EvidenceRadar｜近期研究候選報告</title>
+<title>EvidenceRadar｜{html.escape(report_title)}</title>
 <style>{style}</style>
 </head>
 <body>
@@ -6198,8 +6745,8 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 <div class="page-shell">
 <header class="hero">
 <p class="eyebrow">EvidenceRadar · automated discovery lane</p>
-<h1>近期研究候選報告</h1>
-<p class="lede">先讀每類今日精選，再按需展開完整候選池。文獻／研究類型採來源 metadata 與題名明示的保守分類；不確定就留白。OA 狀態與本輪全文存取分開顯示；被擋的 OA 來源仍保留為 OA，且 DOI／摘要頁不會被算成全文成功。</p>
+<h1>{html.escape(report_title)}</h1>
+<p class="lede">{html.escape(report_lede)}</p>
 <div class="run-line">
 <span>產生時間：{html.escape(generated_at.isoformat())}</span>
 <span>觀測窗：{html.escape(start.isoformat())} → {html.escape(end.isoformat())}</span>
@@ -6228,6 +6775,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 <div class="control"><label for="oa-filter">OA 狀態</label><select id="oa-filter"><option value="">全部 OA</option><option value="YES">OA：是</option><option value="NO">OA：否</option><option value="UNKNOWN">OA：未知</option></select></div>
 <div class="control"><label for="access-filter">全文存取</label><select id="access-filter"><option value="">全部存取狀態</option><option value="ACCESSIBLE">全文：可存取</option><option value="BLOCKED">全文：受阻</option><option value="PAYWALLED">全文：付費</option><option value="FAILED">全文：檢查失敗</option><option value="NOT_CHECKED">全文：未檢查</option></select></div>
 <div class="control"><label for="study-type-filter">文獻／研究類型</label><select id="study-type-filter"><option value="">全部類型</option><option value="randomized_controlled_trial">RCT</option><option value="systematic_review">系統性回顧</option><option value="meta_analysis">Meta-analysis</option><option value="clinical_trial">Clinical trial</option><option value="cohort_study">Cohort</option><option value="case_control_study">Case-control</option><option value="cross_sectional_study">Cross-sectional</option><option value="case_report">Case report</option><option value="qualitative_study">Qualitative</option><option value="protocol">Protocol</option><option value="review">Review</option><option value="preprint">預印本</option><option value="conference_paper">會議論文</option></select></div>
+<div class="control"><label for="glass-decision-filter">玻璃篩選</label><select id="glass-decision-filter"><option value="">全部判定</option><option value="INCLUDE">納入</option><option value="EXCLUDE">排除</option><option value="UNCERTAIN">必要條件待確認</option></select></div>
 <div class="control-actions"><button class="button primary" id="reset-filters" type="button">清除篩選</button><button class="button" id="expand-all" type="button">展開類別</button><button class="button" id="collapse-all" type="button">收合類別</button></div>
 <p class="result-count" id="result-count" aria-live="polite">顯示 {len(displayed)} / {len(displayed)} 項候選</p>
 </section>
@@ -6235,7 +6783,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 <main>
 <section id="candidate-pool" aria-labelledby="candidate-heading">
 <h2 id="candidate-heading">本輪候選池</h2>
-<p class="panel-intro">今日精選只接受本輪 {window_hours} 小時內有合格事件的候選；閱讀量由 profile 的每類 target/hard、ranking pool 與 final digest budget 控制。完整去重候選仍保留在收合的完整池，可搜尋、展開與依事件分流；無合格事件者不會被標成今日優先。分數只協助閱讀順序，不代表研究價值。</p>
+<p class="panel-intro">今日精選只接受本輪 {window_hours} 小時內有合格事件且通過 profile 必要條件的候選；排除與不確定文獻保留在完整池，可依「玻璃篩選」查看。分數只協助閱讀順序，不代表研究價值。</p>
 <div id="empty-state" class="empty-state" hidden>沒有符合目前篩選條件的候選。</div>
 {candidate_html}
 </section>
@@ -6265,7 +6813,7 @@ h1{margin:.1rem 0 .45rem;font-size:clamp(2rem,5vw,3.5rem);line-height:1.08;lette
 </details>
 </section>
 </main>
-<p class="footer-note">候選顯示不受 publisher {publisher_min}–{publisher_max} 探測額度限制。本報告是研究分流，不是個人醫療建議；繁中翻譯與自動簡述只供導航，不會被當成已核實科學結論。</p>
+<p class="footer-note">候選顯示不受 publisher {publisher_min}–{publisher_max} 探測額度限制。納入判定必須綁定原文頁碼；繁中翻譯與自動簡述只供導航，不會取代原文。</p>
 </div>
 <script>{script}</script>
 </body>
@@ -6450,6 +6998,8 @@ def execute(
     state_path: Path,
     runs_dir: Path | None = None,
     end_at: datetime | None,
+    start_at: datetime | None = None,
+    mode: str = "daily",
     run_id: str | None,
     execution_lane: str,
     publisher_target_min: int | None = None,
@@ -6463,6 +7013,8 @@ def execute(
     discoverer: Callable[..., Any] = discover_candidates,
     publisher_probe: Callable[..., tuple[list[tuple[Candidate, dict[str, Any]]], list[dict[str, Any]], list[str]]] = probe_publisher_pages,
 ) -> dict[str, Any]:
+    if mode not in {"daily", "focused", "deep_verify"}:
+        raise RadarRuntimeError("mode must be daily, focused or deep_verify")
     if work_translation_overrides is not None and (
         translation_request_path is not None or translation_response_path is not None
     ):
@@ -6576,7 +7128,13 @@ def execute(
     SOURCE_ENDPOINTS.update(master_runtime.source_endpoints)
     output.setdefault("selection", {})["categories"] = master_runtime.category_order
     _apply_master_runtime_limits(output, deployment, master_runtime.limits)
-    timezone_name = str(output.get("window", {}).get("timezone", DEFAULT_TIMEZONE))
+    profile_run_policy = master_runtime.profile_policy.get("run_policy", {})
+    if not isinstance(profile_run_policy, dict):
+        profile_run_policy = {}
+    timezone_name = str(
+        profile_run_policy.get("timezone")
+        or output.get("window", {}).get("timezone", DEFAULT_TIMEZONE)
+    )
     timezone = ZoneInfo(timezone_name)
     commit = _protocol_commit(root, protocol_commit)
     request_start: datetime | None = None
@@ -6599,10 +7157,22 @@ def execute(
     else:
         end_at = end_at.astimezone(timezone)
     if request_start is not None and request_window_hours is not None:
+        if start_at is not None:
+            raise RadarRuntimeError("explicit start_at cannot override a translation request")
         start = request_start.astimezone(timezone)
         window_hours = request_window_hours
+    elif start_at is not None:
+        if start_at.tzinfo is None or start_at.utcoffset() is None:
+            raise RadarRuntimeError("start_at must include a timezone offset")
+        start = start_at.astimezone(timezone)
+        if start >= end_at:
+            raise RadarRuntimeError("start_at must be earlier than end_at")
+        window_hours = max(1, round((end_at - start).total_seconds() / 3600))
     else:
-        window_hours = int(output.get("window", {}).get("rolling_hours", 72))
+        window_hours = int(
+            profile_run_policy.get("subsequent_rolling_hours")
+            or output.get("window", {}).get("rolling_hours", 72)
+        )
         start = end_at - timedelta(hours=window_hours)
     publisher_config = dict(deployment.get("publisher_output", {}))
     if publisher_target_min is not None:
@@ -7094,6 +7664,8 @@ def execute(
             "runtime_request_sha256": runtime_request_digest,
         }
     )
+    if master_runtime.profile_id == "glass_ag_na_ion_exchange":
+        state.setdefault("notes", []).append("GLASS_AG_NA_SCREENING_V1")
     translated_titles = {
         str(item["work_id"]): str(item["title_zh_tw"])
         for item in candidate_records
@@ -7134,6 +7706,8 @@ def execute(
         "runtime_request_sha256": runtime_request_digest,
     }
     evidence.update(copy.deepcopy(master_bindings))
+    if master_runtime.profile_id == "glass_ag_na_ion_exchange":
+        evidence.setdefault("notes", []).append("GLASS_AG_NA_SCREENING_V1")
     run = {
         "schema_version": "1.0",
         "artifact_type": "EvidenceRadar_Run",
@@ -7141,7 +7715,7 @@ def execute(
         **copy.deepcopy(master_bindings),
         "started_at": end_at.isoformat(),
         "finished_at": finished_at.isoformat(),
-        "mode": "daily",
+        "mode": mode,
         "window": {"start": start.isoformat(), "end": end_at.isoformat(), "hours": window_hours},
         "run_status": run_status,
         "history_status": history_status,
@@ -7251,6 +7825,11 @@ def execute(
             "SEMANTIC_CONTRACT_V3",
             "EXECUTOR_HTTP_TELEMETRY_V1",
             "STUDY_CLASSIFICATION_V1",
+            *(
+                ["GLASS_AG_NA_SCREENING_V1"]
+                if master_runtime.profile_id == "glass_ag_na_ion_exchange"
+                else []
+            ),
             featured_policy_note(featured_policy),
             f"RADAR_PROFILE:{streams.get('control_plane', {}).get('profile_id', 'legacy')}",
             "RADAR_STREAMS_JSON:"
@@ -7345,6 +7924,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--runs-dir", type=Path)
     parser.add_argument("--end-at", type=datetime.fromisoformat)
+    parser.add_argument("--start-at", type=datetime.fromisoformat)
+    parser.add_argument(
+        "--mode", choices=("daily", "focused", "deep_verify"), default="daily"
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--execution-lane", choices=("github_actions",), default="github_actions")
     parser.add_argument("--publisher-target-min", type=int)
@@ -7407,6 +7990,8 @@ def main(argv: list[str] | None = None) -> int:
             state_path=args.state.resolve(),
             runs_dir=args.runs_dir.resolve() if args.runs_dir else None,
             end_at=end_at,
+            start_at=args.start_at,
+            mode=args.mode,
             run_id=run_id,
             execution_lane=args.execution_lane,
             publisher_target_min=args.publisher_target_min,
